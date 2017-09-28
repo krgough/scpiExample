@@ -11,7 +11,7 @@ import time
 import socket
 from tqdm import tqdm
 
-HOST='192.168.130.65'
+HOST='10.19.2.5'
 PORT=5025
 debug=True
 
