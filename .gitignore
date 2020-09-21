@@ -1,7 +1,6 @@
 .DS_Store
 .project
 .pydevproject
-dist/
 scpiProject.egg-info
 scpiProject/__pycache__
 scpi_project.egg-info
