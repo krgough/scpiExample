@@ -8,6 +8,15 @@ It includes current and voltage consumption test methods we can use to over exte
 
 See the device manual for details of the commands used.
 
-Usage:
+Install the package:
 
-pip 3 install 
+pip3 install git+https://github.com/krgough/scpiExample.git
+
+(or clone the git hub repo)
+
+Using the package:
+
+In a python script import and the package as follows:
+
+from scpi_project import scpi_module_34465a
+scpi_module_34465a.main()

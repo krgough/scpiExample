@@ -34,6 +34,7 @@ CONFIG_FILE = 'config.cfg'
 
 
 class CommandError(Exception):
+    """ Exception for errors when sending cmds to the meter """
     pass
 
 
