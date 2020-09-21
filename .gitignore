@@ -5,3 +5,4 @@ scpiProject.egg-info
 scpiProject/__pycache__
 scpi_project.egg-info
 scpi_project/__pycache__
+dist/

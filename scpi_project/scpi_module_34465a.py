@@ -8,16 +8,18 @@ Created on 2 Dec 2016
 ScpiDevice Module for communication with LAN connected instruments
 tested with Keysight 34465a multimeter
 
-Notes:
-
-R? reads and deletes data from the meter. If network is unreliable and a
-network error occurs then we can have data loss.
-
-FETC? (fetch) - waits until measurement is complete, then downloads then data.
-As long as data series fits in memory (i.e. no more than 2000000 readings)
-then this is probably a better method to use.
-
 '''
+
+# Notes:
+#
+# R? reads and deletes data from the meter. If network is unreliable and a
+# network error occurs then we can have data loss.
+#
+# FETC? (fetch) - waits until measurement is complete, then downloads data.
+# As long as data series fits in memory (i.e. no more than 2000000 readings)
+# then this is probably a better method to use.
+
+
 import time
 import socket
 import sys
@@ -35,7 +37,6 @@ CONFIG_FILE = 'config.cfg'
 
 class CommandError(Exception):
     """ Exception for errors when sending cmds to the meter """
-    pass
 
 
 class ScpiDevice:
