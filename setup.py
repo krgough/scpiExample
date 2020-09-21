@@ -27,8 +27,8 @@ def get_version(rel_path):
 
 long_description = read('README.md')
 
-setup(name='scpiProject',
-      version=get_version('scpiProject/__init__.py'),
+setup(name='scpi_project',
+      version=get_version('scpi_project/__init__.py'),
       description='SCPI instrument driver',
       long_description=long_description,
       url='',

@@ -23,13 +23,18 @@ import socket
 import sys
 import os
 import logging
+import pickle
 from tqdm import tqdm
 
 LOGGER = logging.getLogger(__name__)
 
 HOST = '192.168.1.188'
 PORT = 5025
-DEBUG = True
+CONFIG_FILE = 'config.cfg'
+
+
+class CommandError(Exception):
+    pass
 
 
 class ScpiDevice:
@@ -48,10 +53,16 @@ class ScpiDevice:
         """ Connect to the device """
         # Try twice if first connection fails
         # If first attempt fails then wait 30s and retry
+        print("\nAttempting to connect to meter...")
         conn = self._socket_connect()
-        if not conn:
-            LOGGER.error("Connection to socket failed. Will retry in 30s...")
+        attempts = 1
+        max_attempts = 5
+        if not conn and attempts < max_attempts:
+            print("Attempt {} of {}. "
+                  "Connection to socket failed. Will retry in 30s...".format(
+                      attempts, max_attempts))
             time.sleep(30)
+            attempts += 1
             conn = self._socket_connect()
         return conn
 
@@ -65,7 +76,7 @@ class ScpiDevice:
             return True
         except socket.error as err:
             self.error = "ERROR: Socket connection error. {}".format(err)
-            LOGGER.error(self.error)
+            print(self.error)
             return False
 
     def write(self, payload):
@@ -355,9 +366,10 @@ def parse_block_header(block):
             num_actual_bytes = len(block[data_start:-1])
         else:
             num_actual_bytes = len(block[data_start:])
-    except IndexError:
-        print(block)
-        sys.exit(1)
+    except IndexError as err:
+        msg = "Index error in parse_clock_header(). {}".format(block)
+        raise IndexError(msg) from err
+
     return data_start, num_expected_bytes, num_actual_bytes
 
 
@@ -394,12 +406,12 @@ def read_data(device, filename, expected_points, progress=True):
                 block = device.sock.recv(buff_len)
 
         except socket.timeout:
-            LOGGER.error('Socket timeout waiting for block data.')
+            print('Socket timeout waiting for block data.')
             block = b''
             device.connect()
 
         if block == b'':
-            LOGGER.error('No data received')
+            print('No data received')
 
         else:
 
@@ -424,19 +436,19 @@ def read_data(device, filename, expected_points, progress=True):
                         file.write("{}\n".format(data_point))
 
 
-def read_with_fetch(device, filename, expected_points,
-                    test_duration, progress=True):
+def trigger_and_fetch(device, settings, progress=True):
     """ Meter is buffering data for us, up to a max of 2000000 samples,
         Use FETC? to read all data once measurement is complete.
     """
-    if expected_points > 2000000:
+    num_samples = int(settings['duration'] / settings['sample_rate'])
+    if num_samples > 2000000:
         print("Read_with_fetch only works with less than 2M samples. "
               "Try using read_data instead.")
-        sys.exit(1)
+        return
 
     # Setup the progress bar
     if progress:
-        pbar = tqdm(total=test_duration)
+        pbar = tqdm(total=settings['duration'])
 
     # Triggger the instrument
     update_time = time.time()
@@ -454,7 +466,7 @@ def read_with_fetch(device, filename, expected_points,
     device.show_op_reg()
 
     # Measurement has finished so get the data
-    get_existing_data(device, filename, expected_points)
+    get_existing_data(settings)
 
 
 def read_data_with_fetch(device):
@@ -462,7 +474,7 @@ def read_data_with_fetch(device):
 
     """
     # Measurement has finished so get the data
-    LOGGER.info("Downloading data from the meter...")
+    print("Downloading data from the meter...")
 
     device.write('FETC?')
     block = b''
@@ -470,7 +482,7 @@ def read_data_with_fetch(device):
         block += device.sock.recv(100000)
 
     data = block.decode().strip().split(",")
-    LOGGER.info("Download done.  Number of Samples = %s", len(data))
+    print("Download done.  Number of Samples = {}".format(len(data)))
     return data
 
 
@@ -481,7 +493,7 @@ def write_data_to_file(filename, data):
     with open(filename, mode='a') as file:
         for data_point in data:
             file.write("{}\n".format(data_point))
-    LOGGER.info("Data written to file %s", filename)
+    print("Data written to file {}".format(filename))
 
 
 def send_commands(meter, cmds):
@@ -490,33 +502,26 @@ def send_commands(meter, cmds):
     for cmd in cmds:
         write_state = meter.write(cmd)
         if write_state is False:
-            LOGGER.error("Device write error.")
+            raise CommandError("Device write error in send_commands()")
 
         # Also need to check that device has not generated an error
         # based on the last command
         error = meter.get_error()[1].decode().split(',')[1].strip()
         if error != '"No error"':
-            print("***ERROR: {},{}".format(cmd, error))
-            sys.exit(1)
-            LOGGER.debug(error)
+            msg = "Command Error in send_commands: {},{}".format(cmd, error)
+            raise CommandError(msg)
 
 
 def current_measure_setup(meter, settings):
-    """ Method to send the setup commands
-
-        settings = {'curr_range': '10mA',
-                    'apperture':   0.001,     # 1ms integration apperture
-                    'num_samples': 1000000,
-                    'sample_rate': 0.001,     # Sample every 1ms
-                   }
-
+    """ Method to send the setup commands for current measurements
     """
     # Configure the instrument to take the readings
+    num_samples = settings['duration'] / settings['sample_rate']
     cmds = ['SENS:FUNC:ON "CURR:DC"',
             'CONF:CURR:DC {}'.format(settings['curr_range']),
             'SENS:CURR:DC:ZERO:AUTO OFF',
-            'SENS:CURR:DC:APER {}'.format(settings['apperture']),
-            'SAMP:COUNT {}'.format(settings['num_samples']),
+            'SENS:CURR:DC:APER {}'.format(settings['aperture']),
+            'SAMP:COUNT {}'.format(num_samples),
             'TRIG:SOUR BUS',
             'SAMP:SOUR TIM',
             'SAMP:TIM {}'.format(settings['sample_rate']),
@@ -525,17 +530,63 @@ def current_measure_setup(meter, settings):
     send_commands(meter, cmds)
 
 
-def start_measurement(meter, measure, settings):
+def voltage_measure_setup(meter, settings):
+    """ Function to send the setup commands for voltage measurements
+
+    """
+    # Configure the instrument to take the readings
+    num_samples = settings['duration'] / settings['sample_rate']
+    cmds = ['SENS:FUNC:ON "VOLT:DC"',
+            'CONF:VOLT:DC {}'.format(settings['volt_range']),
+            'SENS:VOLT:DC:ZERO:AUTO OFF',
+            'SENS:VOLT:DC:APER {}'.format(settings['aperture']),
+            'SAMP:COUNT {}'.format(num_samples),
+            'TRIG:SOUR BUS',
+            'SAMP:SOUR TIM',
+            'SAMP:TIM {}'.format(settings['sample_rate']),
+            'INIT']
+
+    send_commands(meter, cmds)
+
+
+def file_exists(settings):
+    """ Abort if file already exists
+    """
+    if os.path.isfile(settings['filename']):
+        print('File {} already exists'.format(settings['filename']))
+        input("Hit any key to continue...\n")
+        return True
+    return False
+
+
+def get_meter(settings):
+    """ Connect to the meter
+    """
+    meter = Multimeter34465a(settings['ip_addr'], settings['port'])
+    if meter.sock is None:
+        print("No socket. Exit. {}".format(meter.error))
+        sys.exit(1)
+    else:
+        print("Connected to:\n")
+        print(meter.get_idn()[1].decode().strip())
+        print("IP: {}\n".format(settings['ip_addr']))
+    return meter
+
+
+def start_measurement(measure, settings):
     """  Logs current using given parameters.
          Reset the meter, clear the registers, show the reg settings
          Program the meter settings for the test.
          Run the test and wait for completion.
          Download and save data to a file
     """
-    print_settings(settings)
+    if file_exists(settings):
+        return
 
-    LOGGER.info("Running a new test.")
-    LOGGER.info("Resetting the multimeter...")
+    meter = get_meter(settings)
+
+    print("Running a new test.")
+    print("Resetting the multimeter...")
     meter.reset()
     meter.clear_registers()
     meter.show_op_reg()
@@ -547,59 +598,41 @@ def start_measurement(meter, measure, settings):
         voltage_measure_setup(meter, settings)
     else:
         print('ERROR: measurement not recognised')
-        sys.exit(1)
+        meter.close()
+        return
 
-    duration = settings['num_samples'] * settings['sample_rate']
-    LOGGER.info("Waiting for measurement to complete:")
-    LOGGER.info("samples requested = %s", settings['num_samples'])
-    LOGGER.info("test duration     = %ss", duration)
+    num_samples = int(settings['duration'] / settings['sample_rate'])
+    print("Waiting for measurement to complete:")
+    print("samples requested = {}".format(num_samples))
+    print("test duration     = {}s".format(settings['duration']))
 
     # Trigger, wait for completion and download the data from the instrument
-    LOGGER.info("Triggering the measurement...")
-    read_with_fetch(meter,
-                    settings['filename'],
-                    settings['num_samples'],
-                    duration)
+    print("Triggering the measurement...")
+    trigger_and_fetch(meter, settings)
 
-    LOGGER.info("Test complete...")
+    print("Test complete...")
+    meter.close()
 
 
-def get_existing_data(meter, filename, num_samples):
+def get_existing_data(settings):
     """ Get an existing dataset from the meter
     """
+    if file_exists(settings):
+        return
+    meter = get_meter(settings)
+
     data = read_data_with_fetch(meter)
+
+    num_samples = int(settings['duration'] / settings['sample_rate'])
+
     if len(data) != num_samples:
-        LOGGER.error("Sample count error:  expected %s, got %s",
-                     num_samples,
-                     len(data))
+        print("Sample count error:  expected {}, got {}".format(num_samples,
+                                                                len(data)))
 
-        LOGGER.error("Data not saved to file")
+        print("Data not saved to file")
     else:
-        write_data_to_file(filename, data)
-
-
-def voltage_measure_setup(meter, settings):
-    """ Function to send the setup commands
-
-        settings = {'curr_range': '10mA',
-                    'apperture':   0.001,     # 1ms integration apperture
-                    'num_samples': 1000000,
-                    'sample_rate': 0.001,     # Sample every 1ms
-                   }
-
-    """
-    # Configure the instrument to take the readings
-    cmds = ['SENS:FUNC:ON "VOLT:DC"',
-            'CONF:VOLT:DC {}'.format(settings['volt_range']),
-            'SENS:VOLT:DC:ZERO:AUTO OFF',
-            'SENS:VOLT:DC:APER {}'.format(settings['apperture']),
-            'SAMP:COUNT {}'.format(settings['num_samples']),
-            'TRIG:SOUR BUS',
-            'SAMP:SOUR TIM',
-            'SAMP:TIM {}'.format(settings['sample_rate']),
-            'INIT']
-
-    send_commands(meter, cmds)
+        write_data_to_file(settings['filename'], data)
+    meter.close()
 
 
 def print_settings(settings):
@@ -609,78 +642,120 @@ def print_settings(settings):
             msg = "{:15}: {:f}".format(setting, settings[setting])
         else:
             msg = "{:15}: {}".format(setting, settings[setting])
-        LOGGER.info(msg)
+        print(msg)
+
+
+def load_settings(default=False):
+    """ Returns the settings to use for the test
+
+        If default is TRUE:
+            return the default settings
+        Else:
+            If a default file exists
+                return settings from the file
+            Else:
+                return default settings
+
+    # if yes then load it
+    # else use defaults
+    # Allow use to force use of defaults.
+    """
+    # Default Settings definitions
+    filename = '/tmp/junk.txt'
+    duration = 30
+
+    # Integration Aperture
+    aperture = calc_34465a_aperture(duration)
+
+    # Set the default sample rate to same period as integration aperture
+    sample_rate = aperture
+
+    default_settings = {
+        'ip_addr': HOST,
+        'port': PORT,
+        'curr_range': '100mA',
+        'volt_range': '100mV',
+        'duration': duration,
+        'aperture': aperture,
+        'sample_rate': sample_rate,
+        'filename': filename,
+        }
+
+    if default:
+        return default_settings
+
+    try:
+        with open(CONFIG_FILE, "rb") as file:
+            settings = pickle.load(file)
+    except FileNotFoundError:
+        settings = default_settings
+
+    return settings
+
+
+def save_settings(settings):
+    """ Pickle settings into the config file
+    """
+    with open(CONFIG_FILE, 'wb') as file:
+        pickle.dump(settings, file)
 
 
 def main():
-    """ Main Program """
-    filename = '/tmp/junk.txt'
-    if os.path.isfile(filename):
-        LOGGER.error('File already exists')
-        sys.exit(1)
+    """ Allow user to select new settings and start the measurement
 
-    meter = Multimeter34465a(HOST, PORT)
-    if meter.sock is None:
-        print("No socket. Exit. {}".format(meter.error))
-        sys.exit(1)
-    else:
-        print("Connected to:\n")
-        print(meter.get_idn()[1].decode().strip())
-        print("IP: {}\n".format(HOST))
+    """
+    settings = load_settings()
 
-    # Settings definition for the test
-    # Notes:
-    # Max number of samples is 2000000
-    # Min apperture setting is 22us
+    while True:
+        fields = ['ip_addr', 'port', 'curr_range', 'volt_range', 'duration',
+                  'aperture', 'sample_rate', 'filename']
 
-    duration = 30  # Seconds
-    aperture = calc_34465a_aperture(duration)
+        values = [settings[field] for field in fields]
 
-    sample_rate = aperture
+        print("Choose an attribute to modify or 's' to start the measurement:")
+        for idx, field in enumerate(fields):
+            value = values[idx]
+            if isinstance(value, float):
+                value = "{:f}".format(value)
+            print("{:2}) {:12}: {}".format(idx + 1, field, value))
+        print(" d) Reset to default settings")
+        print(" c) Start current measurement")
+        print(" v) Start voltage measurement")
+        print(" e) Get existing data from meter")
+        print(" x) Exit\n")
 
-    current_settings = {
-        'curr_range': '100mA',
-        'apperture': aperture,  # integration apperture
-        'num_samples': int(duration / sample_rate),
-        'sample_rate': sample_rate,
-        'filename': filename
-        }
+        resp = input("Select an option: ")
 
-    voltage_settings = {
-        'volt_range': '100mV',
-        'apperture': aperture,  # integration apperture
-        'num_samples': int(duration / sample_rate),
-        'sample_rate': sample_rate,
-        'filename': filename
-        }
+        # Handle attribute changes
+        if resp in ['1', '2', '3', '4', '5', '6', '7', '8', '9']:
+            idx = int(resp) - 1
+            field = fields[idx]
+            old_val = values[idx]
+            new_val = input("{} = ".format(field))
 
-    # Show the menu:
+            try:
+                new_val = type(old_val)(new_val)
+                settings[field] = new_val
+                with open(CONFIG_FILE, 'wb') as file:
+                    pickle.dump(settings, file)
+            except ValueError:
+                print('Wrong data type.  Try again.\n')
 
-    my_prompt = (
-        "Select an option:\n"
-        "1: Make a new Current measurement\n"
-        "2: Make a new Voltage measurement\n"
-        "3: Download existing data from instrument\n"
-        "X: Exit\n"
-        )
+        elif resp == 'd':
+            settings = load_settings(default=True)
 
-    resp = input(my_prompt)
+        elif resp == 'c':
+            start_measurement(measure='CURR', settings=settings)
 
-    if resp == '1':
-        # Current logging test
-        settings = current_settings
-        start_measurement(meter, measure='CURR', settings=settings)
-    elif resp == '2':
-        settings = voltage_settings
-        start_measurement(meter, measure='VOLT', settings=settings)
-    elif resp == '3':
-        get_existing_data(meter, filename, settings['num_samples'])
-    else:
-        pass
+        elif resp == 'v':
+            start_measurement(measure='VOLT', settings=settings)
 
-    # Shutdown
-    meter.close()
-    print("All done.")
+        elif resp == 'e':
+            get_existing_data(settings)
+
+        elif resp == 'x':
+            print('All done.')
+            return
 
 
 if __name__ == "__main__":
