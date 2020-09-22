@@ -735,6 +735,7 @@ def get_args(settings):
         print_settings(settings)
         get_existing_data(settings)
 
+    print(my_args)
     if len(sys.argv) > 1:
         return True
 
