@@ -19,7 +19,7 @@ tested with Keysight 34465a multimeter
 # As long as data series fits in memory (i.e. no more than 2000000 readings)
 # then this is probably a better method to use.
 
-
+import argparse
 import time
 import socket
 import sys
@@ -104,7 +104,7 @@ class ScpiDevice:
             self.error = None
             resp_state = True
         except socket.error as err:
-            self.error = "ERROR: socket recieve error. {}".format(err)
+            self.error = "ERROR: socket receive error. {}".format(err)
             resp_value = None
             resp_state = False
         return resp_state, resp_value
@@ -130,7 +130,6 @@ class Multimeter34465a(ScpiDevice):
     """ Class for handling Keysight 34465A Multimeter """
     def __init__(self, host, port):
         ScpiDevice.__init__(self, host, port)
-        self.connect()
 
     def get_idn(self):
         """ Send *IDN? to get instrument identifier
@@ -569,8 +568,8 @@ def get_meter(settings):
         print("No socket. Exit. {}".format(meter.error))
         sys.exit(1)
     else:
-        print("Connected to:\n")
-        print(meter.get_idn()[1].decode().strip())
+        msg = meter.get_idn()[1].decode().strip()
+        print("Connected to: {}".format(msg))
         print("IP: {}\n".format(settings['ip_addr']))
     return meter
 
@@ -612,13 +611,14 @@ def start_measurement(measure, settings):
     print("Triggering the measurement...")
     trigger_and_fetch(meter, settings)
 
-    print("Test complete...")
+    print("Test complete.")
     meter.close()
 
 
 def get_existing_data(settings):
     """ Get an existing dataset from the meter
     """
+    print('Downloading data...')
     if file_exists(settings):
         return
     meter = get_meter(settings)
@@ -702,13 +702,53 @@ def save_settings(settings):
         pickle.dump(settings, file)
 
 
+def get_args(settings):
+    """ Get the command line arguments (if any)
+
+        -v|-c = Voltage or current measurement
+        -e    = Download existing data from the meter
+
+        Run with no args to show the menu.
+    """
+    msg = ("Utility to drive 34465a keysight multimeter. "
+           "Run with no parameters to show menu or use the following "
+           "options to run a test with the current settings.")
+
+    parser = argparse.ArgumentParser(description=msg)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-v", action="store_true",
+                       help="Voltage measurement")
+    group.add_argument("-c", action="store_true",
+                       help="Current measurement")
+    group.add_argument("-e", action="store_true",
+                       help="Download existing data")
+
+    my_args = parser.parse_args()
+
+    if my_args.v:
+        print_settings(settings)
+        start_measurement(measure='VOLT', settings=settings)
+    elif my_args.c:
+        print_settings(settings)
+        start_measurement(measure='CURR', settings=settings)
+    elif my_args.e:
+        print_settings(settings)
+        get_existing_data(settings)
+
+    if len(sys.argv) > 1:
+        return True
+
+    return False
+
+
 def main():
     """ Allow user to select new settings and start the measurement
 
     """
     settings = load_settings()
+    args = get_args(settings)
 
-    while True:
+    while not args:
         fields = ['ip_addr', 'port', 'curr_range', 'volt_range', 'duration',
                   'aperture', 'sample_rate', 'filename']
 
@@ -738,13 +778,13 @@ def main():
             try:
                 new_val = type(old_val)(new_val)
                 settings[field] = new_val
-                with open(CONFIG_FILE, 'wb') as file:
-                    pickle.dump(settings, file)
+                save_settings(settings)
             except ValueError:
-                print('Wrong data type.  Try again.\n')
+                input('Wrong data type.  Hit enter to try again.\n')
 
         elif resp == 'd':
             settings = load_settings(default=True)
+            save_settings(settings)
 
         elif resp == 'c':
             start_measurement(measure='CURR', settings=settings)
@@ -761,5 +801,5 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     main()
