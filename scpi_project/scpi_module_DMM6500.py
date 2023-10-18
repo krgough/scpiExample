@@ -33,6 +33,7 @@ LOGGER = logging.getLogger(__name__)
 IP_ADDR = "192.168.1.45"
 PORT = 5025
 DATAFILE = 'meter_data'
+BUFFER_NAME = "kgbuffer"
 
 
 class CommandError(Exception):
@@ -262,12 +263,12 @@ class MultimeterDMM6500(ScpiDevice):
         # Measurement has finished so get the data
         LOGGER.info("Downloading data from the meter...")
 
-        data = self.get(f':TRACE:DATA? 1, 10000, "{buffer}"')
-
-        # self._write(f':TRACE:DATA? 1, 10000, "{buffer}"')
+        # data = self.get(f':TRACE:DATA? 1, 10000, "{buffer}"')
+        last_index = self.get(f':TRACe:ACTual:END? "{buffer}"')[1].decode().strip()
+        data = self._write(f':TRACE:DATA? 1, {last_index}, "{buffer}"')
         block = b''
         while not block.endswith(b'\n'):
-            block += self.sock.recv(100000)
+            block += self.sock.recv(1000000)
 
         data = block.decode().strip().replace("\n", ",")
         data = data.split(",")
@@ -382,41 +383,40 @@ def get_meter(settings):
     return meter
 
 
+def handle_download(args):
+    """Download data from the meter buffer and save to a file"""
+    meter = get_meter(settings={"ip_addr": args.ip_address, "port": PORT})
+    data = meter.read_data(buffer=BUFFER_NAME)
+    filename = get_filename()
+    print(f"Averge current: {format(sum(data) / len(data))}")
+    save_data_to_file(data=data, filename=filename)
+
+
+def handle_measurement(args):
+    """Setup and trigger a measurement.  Data saved to a buffer on the device"""
+    settings = {
+        'count': args.samples,
+        "sample_rate": args.rate,
+        "range": args.measurement_range,
+        "buffer": BUFFER_NAME
+    }
+
+    meter = get_meter(settings={"ip_addr": args.ip_address, "port": PORT})
+
+    if args.voltage:
+        meter.reset()
+        meter.voltage_measurement(settings)
+    elif args.current:
+        meter.reset()
+        meter.current_measurement(settings)
+
+
 def get_args():
     """Get the command line arguments and run the required measurement"""
     msg = "Utility to drive DMM6550 keysight multimeter."
 
     parser = argparse.ArgumentParser(description=msg)
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "-v", "--voltage",
-        action="store_true",
-        help="DC Voltage measurement"
-    )
-    group.add_argument(
-        "-c", "--current",
-        action="store_true",
-        help="DC Current measurement"
-    )
 
-    parser.add_argument(
-        "-m", "--measurement_range",
-        type=str,
-        required=True,
-        help="Measurement range e.g. 100e-3"
-    )
-    parser.add_argument(
-        "-r", "--rate",
-        type=int,
-        required=True,
-        help="Sample rate for the measurement"
-    )
-    parser.add_argument(
-        "-n", "--samples",
-        required=True,
-        type=int,
-        help="Number of samples to take"
-    )
     parser.add_argument(
         "-i", "--ip-address",
         required=True,
@@ -424,21 +424,44 @@ def get_args():
         help="IP Address of the meter"
     )
 
-    my_args = parser.parse_args()
+    subparsers = parser.add_subparsers(help="Subcommands:")
 
-    meter = get_meter(settings={"ip_addr": my_args.ip_address, "port": PORT})
-    meter.reset()
-    settings = {
-        'count': my_args.samples,
-        "sample_rate": my_args.rate,
-        "range": my_args.measurement_range,
-        "buffer": "kgbuffer"
-    }
+    download_parser = subparsers.add_parser("download", help="Download data from the meter")
+    download_parser.set_defaults(func=handle_download)
 
-    if my_args.voltage:
-        meter.voltage_measurement(settings)
-    elif my_args.current:
-        meter.current_measurement(settings)
+    measurement_parser = subparsers.add_parser("measurement", help="Measurement type")
+    measurement_parser.set_defaults(func=handle_measurement)
+    measurement_group = measurement_parser.add_mutually_exclusive_group()
+    measurement_group.add_argument(
+        "-v", "--voltage",
+        action="store_true",
+        help="DC Voltage measurement"
+    )
+    measurement_group.add_argument(
+        "-c", "--current",
+        action="store_true",
+        help="DC Current measurement"
+    )
+    measurement_parser.add_argument(
+        "-m", "--measurement_range",
+        type=str,
+        required=True,
+        help="Measurement range e.g. 100e-3"
+    )
+    measurement_parser.add_argument(
+        "-r", "--rate",
+        type=int,
+        required=True,
+        help="Sample rate for the measurement"
+    )
+    measurement_parser.add_argument(
+        "-n", "--samples",
+        required=True,
+        type=int,
+        help="Number of samples to take"
+    )
+
+    return parser.parse_args()
 
 
 def test_commands():
@@ -481,7 +504,8 @@ def main():
     # test_commands()
     # exit()
 
-    get_args()
+    args = get_args()
+    args.func(args)
 
 
 if __name__ == "__main__":

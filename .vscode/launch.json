@@ -1,0 +1,18 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            // "args": ["-i", "192.168.1.45", "download"]
+            "args": ["-i", "192.168.1.45", "measurement", "-c", "-m", "100e-3", "-r", "1000", "-n", "7000000"]
+        }
+    ]
+}

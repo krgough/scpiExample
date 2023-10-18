@@ -6,3 +6,4 @@ scpiProject/__pycache__
 scpi_project.egg-info
 scpi_project/__pycache__
 dist/
+scpi_project/config.cfg
