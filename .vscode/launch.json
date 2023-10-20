@@ -12,7 +12,7 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             // "args": ["-i", "192.168.1.45", "download"]
-            "args": ["-i", "192.168.1.45", "measurement", "-c", "-m", "100e-3", "-r", "1000", "-n", "7000000"]
+            "args": ["-i", "192.168.1.45", "measurement", "-c", "-m", "100e-3", "-r", "1000", "-n", "20000"]
         }
     ]
 }

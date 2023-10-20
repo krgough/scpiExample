@@ -32,7 +32,7 @@ LOGGER = logging.getLogger(__name__)
 
 IP_ADDR = "192.168.1.45"
 PORT = 5025
-DATAFILE = 'meter_data'
+DATAFILE = 'meter_data_'
 BUFFER_NAME = "kgbuffer"
 
 
@@ -46,7 +46,7 @@ class ScpiDevice:
         self.host = host
         self.port = port
         self.buffersize = 256
-        self.socket_timeout = 10
+        self.socket_timeout = 1
 
         self.sock = None
         self.error = None
@@ -125,6 +125,15 @@ class ScpiDevice:
     def close(self):
         """ Close the socket """
         self.sock.close()
+
+    def flush_socket(self):
+        """ Flush the socket connection """
+        try:
+            block = self.sock.recv(1000000)
+            while not block.endswith(b'\n'):
+                block += self.sock.recv(1000000)
+        except TimeoutError:
+            pass
 
 
 class MultimeterDMM6500(ScpiDevice):
@@ -263,8 +272,10 @@ class MultimeterDMM6500(ScpiDevice):
         # Measurement has finished so get the data
         LOGGER.info("Downloading data from the meter...")
 
-        # data = self.get(f':TRACE:DATA? 1, 10000, "{buffer}"')
+        # Get the size of the buffer
         last_index = self.get(f':TRACe:ACTual:END? "{buffer}"')[1].decode().strip()
+
+        # Download the data
         data = self._write(f':TRACE:DATA? 1, {last_index}, "{buffer}"')
         block = b''
         while not block.endswith(b'\n'):
@@ -299,22 +310,30 @@ class MultimeterDMM6500(ScpiDevice):
         timeout = start_time + (settings['count'] // settings['sample_rate']) + 10
         LOGGER.info(
             "Waiting for measurement to complete. Estimated finish time: %s",
-            datetime.datetime.fromtimestamp(timeout).strftime('%Y-%m-%d %H:%M:%S')
+            datetime.datetime.fromtimestamp(timeout-10).strftime('%Y-%m-%d %H:%M:%S')
          )
 
         while time.time() < timeout:
             time.sleep(10)
             res = self.get_idn()
             if res[0] is True:
+                self.flush_socket()
                 LOGGER.info("Measurement complete")
                 return True
 
         LOGGER.error("Measurement timeout")
         return False
 
-    def current_measurement(self, settings):
+    def run_measurement(self, settings):
         """Execute the current measurement and save the results to a file"""
-        measurement_done = self.current_measure_setup(settings)
+        if settings["measurement_type"] == "current":
+            measurement_done = self.current_measure_setup(settings)
+        elif settings["measurement_type"] == "voltage":
+            measurement_done = self.voltage_measure_setup(settings)
+        else:
+            LOGGER.error("Invalid measurement type")
+            sys.exit(1)
+
         if measurement_done:
             data = self.read_data(buffer=settings['buffer'])
             filename = get_filename()
@@ -341,9 +360,7 @@ class MultimeterDMM6500(ScpiDevice):
 
         self.send_commands(cmds)
 
-    def voltage_measurement(self, settings):
-        """Execute the voltage measurement and save the results to a file"""
-        LOGGER.error("Voltage measurement not implemented yet")
+        return False
 
 
 def get_filename():
@@ -401,14 +418,16 @@ def handle_measurement(args):
         "buffer": BUFFER_NAME
     }
 
-    meter = get_meter(settings={"ip_addr": args.ip_address, "port": PORT})
-
     if args.voltage:
-        meter.reset()
-        meter.voltage_measurement(settings)
+        settings['measurement_type'] = "voltage"
+        LOGGER.error("Voltage measurement not implemented yet")
+        sys.exit(1)
     elif args.current:
-        meter.reset()
-        meter.current_measurement(settings)
+        settings['measurement_type'] = "current"
+
+    meter = get_meter(settings={"ip_addr": args.ip_address, "port": PORT})
+    meter.reset()
+    meter.run_measurement(settings)
 
 
 def get_args():
